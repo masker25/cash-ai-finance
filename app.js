@@ -342,6 +342,7 @@ let state = {
   selectedDate: "2026-06-18",
   selectedTaskId: null,
   drawerOpen: false,
+  aiRecordsOpen: false,
   showCriticalOnly: false,
   chartMeta: null,
   resizeBound: false,
@@ -596,7 +597,7 @@ function render() {
   const selectedDay = forecast.days.find((day) => day.date === state.selectedDate) || forecast.minDay;
 
   app.innerHTML = `
-    <div class="app-shell">
+    <div class="app-shell ${state.drawerOpen ? "drawer-visible" : ""}">
       ${renderTopbar()}
       <main class="page">
         ${renderConclusion(metrics, forecast)}
@@ -605,6 +606,7 @@ function render() {
         ${renderWorkspace(forecast, metrics)}
       </main>
       ${renderDrawer(selectedDay)}
+      ${renderAiRecordDock()}
     </div>
   `;
 
@@ -637,6 +639,7 @@ function renderTopbar() {
             )
             .join("")}
         </div>
+        <button type="button" class="ghost-button" data-action="toggle-ai-records">查看 AI 记录${state.records.length > 0 ? ` (${state.records.length})` : ""}</button>
         <button type="button" class="ghost-button" data-action="reset-demo">重置演示</button>
       </div>
     </header>
@@ -645,6 +648,8 @@ function renderTopbar() {
 
 function renderConclusion(metrics, forecast) {
   const dotClass = forecast.recentRisk ? "risk" : metrics.minLevel === "watch" ? "watch" : "";
+  const planCount = state.events.filter((event) => event.affectsForecast).length;
+  const unmatchedCount = state.tasks.filter((task) => task.taskType === "match_transaction" && task.status === "pending").length;
   return `
     <section class="conclusion-band" aria-labelledby="cashConclusionTitle">
       <div>
@@ -659,14 +664,10 @@ function renderConclusion(metrics, forecast) {
           <span>安全线：${formatAmountWan(SAFETY_LINE)}</span>
           <span>预测可信度：${formatPercent(86.4)}</span>
         </div>
+        <div class="trust-strip" aria-label="数据可信状态">
+          数据可信状态：余额同步 <strong>4/4</strong>｜流水待匹配 <strong>${unmatchedCount}项</strong>｜计划纳入 <strong>${planCount}项</strong>｜AI 不直接改数｜数据截至 <strong>09:30</strong>
+        </div>
       </div>
-      <aside class="audit-box" aria-label="数据可信状态">
-        <p class="audit-title">可信资金事实</p>
-        <div class="audit-row"><span>余额同步</span><strong>4/4</strong></div>
-        <div class="audit-row"><span>计划纳入</span><strong>${state.events.filter((event) => event.affectsForecast).length}项</strong></div>
-        <div class="audit-row"><span>流水待匹配</span><strong>${state.tasks.filter((task) => task.taskType === "match_transaction" && task.status === "pending").length}项</strong></div>
-        <div class="audit-row"><span>AI 直接改数</span><strong>不允许</strong></div>
-      </aside>
     </section>
   `;
 }
@@ -743,6 +744,7 @@ function renderWorkspace(forecast, metrics) {
           <span class="tag ${metrics.criticalTaskCount > 0 ? "watch" : "brand"}">${metrics.pendingTaskCount}项</span>
         </div>
         <div class="task-list">
+          ${renderRecommendedActions()}
           ${renderTasks()}
         </div>
       </aside>
@@ -750,7 +752,7 @@ function renderWorkspace(forecast, metrics) {
         <div class="panel-header">
           <div>
             <h2 class="panel-title">资金变动日历</h2>
-            <div class="panel-meta">日期卡片只展示余额、收款、付款、调拨和风险标记，明细进入抽屉。</div>
+            <div class="panel-meta">普通日期只看净变化；风险/关注日期展开收款、付款、调拨和待处理。</div>
           </div>
           <div class="calendar-tools">
             <span class="tag brand">金额单位：万元</span>
@@ -767,18 +769,31 @@ function renderWorkspace(forecast, metrics) {
           ${forecast.days.map(renderDayCard).join("")}
         </div>
       </section>
-      <aside class="panel record-panel">
-        <div class="panel-header">
-          <div>
-            <h2 class="panel-title">AI 记录 / 解释</h2>
-            <div class="panel-meta">AI 只整理、解释、记录，不直接修改正式状态。</div>
-          </div>
-          <span class="tag brand">${state.records.length}条</span>
-        </div>
-        <div class="record-feed">
-          ${state.records.map(renderRecord).join("")}
-        </div>
-      </aside>
+    </section>
+  `;
+}
+
+function renderRecommendedActions() {
+  const transferTask = state.tasks.find((task) => task.id === "task-transfer-ba");
+  const receivableTask = state.tasks.find((task) => task.id === "task-receivable-a");
+  const items = [];
+
+  if (transferTask?.status === "pending") {
+    items.push(`确认 B->A 调拨 ${formatAmountWan(transferTask.amount)}，可解除 ${formatMonthDay(transferTask.affectedDate)} 缺口。`);
+  }
+  if (receivableTask?.status === "pending") {
+    items.push(`确认客户A回款 ${formatAmountWan(receivableTask.amount)}，避免缺口扩大。`);
+  }
+  if (!items.length) {
+    items.push("继续复核流水匹配和工资付款日期，保持安全垫可追溯。");
+  }
+
+  return `
+    <section class="recommend-card" aria-label="今日推荐动作">
+      <p class="recommend-title">今日先处理</p>
+      <ol>
+        ${items.map((item) => `<li>${item}</li>`).join("")}
+      </ol>
     </section>
   `;
 }
@@ -827,10 +842,13 @@ function getTaskAction(task) {
 }
 
 function renderDayCard(day) {
-  const inflow = day.confirmedInflow + day.pendingInflowIncluded + day.transferIn;
-  const outflow = day.confirmedOutflow + day.pendingOutflowIncluded + day.transferOut;
+  const receiptInflow = day.confirmedInflow + day.pendingInflowIncluded;
+  const paymentOutflow = day.confirmedOutflow + day.pendingOutflowIncluded;
+  const transferNet = day.transferIn - day.transferOut;
+  const netFlow = receiptInflow - paymentOutflow + transferNet;
   const balanceClass = day.riskLevel === "risk" ? "risk" : day.riskLevel === "watch" ? "watch" : "";
   const tasks = state.tasks.filter((task) => task.status === "pending" && task.affectedDate === day.date);
+  const isDetailed = day.riskLevel !== "safe";
   return `
     <button type="button" class="day-card ${day.riskLevel} ${state.selectedDate === day.date ? "active" : ""}" data-action="open-day" data-date="${day.date}">
       <div class="day-title">
@@ -838,15 +856,22 @@ function renderDayCard(day) {
         <span>${formatWeek(day.date)}</span>
       </div>
       <div class="day-balance num ${balanceClass}">${formatAmountWan(day.endingAvailableBalance, { showSign: true })}</div>
-      <div class="day-flow">
-        <span>收款</span><strong class="num positive">${formatAmountWan(inflow, { showSign: true })}</strong>
-        <span>付款</span><strong class="num negative">${formatAmountWan(-outflow, { showSign: true })}</strong>
-        <span>调拨</span><strong class="num">${formatAmountWan(day.transferIn - day.transferOut, { showSign: true })}</strong>
-      </div>
-      <div class="day-tags">
-        <span class="tag ${getTagClass(day.riskLevel)}">${getRiskLabel(day.riskLevel)}</span>
-        ${tasks.length ? `<span class="tag watch">待处理 ${tasks.length}项</span>` : ""}
-      </div>
+      ${isDetailed ? `
+        <div class="day-flow">
+          <span>收款</span><strong class="num positive">${formatAmountWan(receiptInflow, { showSign: true })}</strong>
+          <span>付款</span><strong class="num negative">${formatAmountWan(-paymentOutflow, { showSign: true })}</strong>
+          <span>调拨</span><strong class="num">${formatAmountWan(transferNet, { showSign: true })}</strong>
+        </div>
+        <div class="day-tags">
+          <span class="tag ${getTagClass(day.riskLevel)}">${getRiskLabel(day.riskLevel)}</span>
+          ${tasks.length ? `<span class="tag watch">待处理 ${tasks.length}项</span>` : ""}
+        </div>
+      ` : `
+        <div class="day-net-flow">
+          <span>净流入/流出</span>
+          <strong class="num ${netFlow > 0 ? "positive" : netFlow < 0 ? "negative" : "zero"}">${formatAmountWan(netFlow, { showSign: true, unit: false })}</strong>
+        </div>
+      `}
     </button>
   `;
 }
@@ -860,6 +885,26 @@ function renderRecord(record) {
       </div>
       <p class="record-content">${record.content}</p>
     </article>
+  `;
+}
+
+function renderAiRecordDock() {
+  const count = state.records.length;
+  return `
+    <div class="ai-dock">
+      <div class="ai-dock-panel ${state.aiRecordsOpen ? "open" : ""}">
+        <div class="ai-dock-header">
+          <h3 class="ai-dock-header-title">AI 操作记录</h3>
+          <button type="button" class="plain-button" data-action="toggle-ai-records">收起</button>
+        </div>
+        <div class="ai-dock-body">
+          ${count ? state.records.map(renderRecord).join("") : '<p class="muted" style="font-size:13px;">暂无 AI 操作记录。</p>'}
+        </div>
+      </div>
+      <button type="button" class="ai-dock-toggle" data-action="toggle-ai-records">
+        AI 记录${count > 0 ? ` <span class="ai-dock-badge">${count}</span>` : ""}
+      </button>
+    </div>
   `;
 }
 
@@ -1031,6 +1076,10 @@ function bindEvents(forecast) {
       if (action === "confirm-transfer") confirmTransfer(taskId);
       if (action === "confirm-receivable") confirmReceivable(taskId);
       if (action === "mark-reviewed") markReviewed(taskId);
+      if (action === "toggle-ai-records") {
+        state.aiRecordsOpen = !state.aiRecordsOpen;
+        render();
+      }
       if (action === "toggle-critical") {
         state.showCriticalOnly = !state.showCriticalOnly;
         render();
@@ -1049,6 +1098,7 @@ function bindEvents(forecast) {
           selectedDate: "2026-06-18",
           selectedTaskId: null,
           drawerOpen: false,
+          aiRecordsOpen: false,
           showCriticalOnly: false,
           chartMeta: null,
           resizeBound: true,
@@ -1079,6 +1129,7 @@ function openDay(date) {
   state.selectedDate = date;
   state.selectedTaskId = null;
   state.drawerOpen = true;
+  state.aiRecordsOpen = true;
   render();
 }
 
@@ -1088,6 +1139,7 @@ function openTask(taskId) {
   state.selectedTaskId = taskId;
   state.selectedDate = task.affectedDate;
   state.drawerOpen = true;
+  state.aiRecordsOpen = true;
   render();
 }
 
@@ -1116,6 +1168,7 @@ function confirmTransfer(taskId) {
   state.selectedDate = task.affectedDate;
   state.selectedTaskId = task.id;
   state.drawerOpen = true;
+  state.aiRecordsOpen = true;
   render();
 }
 
@@ -1138,6 +1191,7 @@ function confirmReceivable(taskId) {
   state.selectedDate = task.affectedDate;
   state.selectedTaskId = task.id;
   state.drawerOpen = true;
+  state.aiRecordsOpen = true;
   render();
 }
 
@@ -1153,6 +1207,7 @@ function markReviewed(taskId) {
   state.selectedDate = task.affectedDate;
   state.selectedTaskId = task.id;
   state.drawerOpen = true;
+  state.aiRecordsOpen = true;
   render();
 }
 
@@ -1166,6 +1221,7 @@ function addRecord(recordType, title, content) {
     relatedEventIds: [],
     relatedTaskIds: [],
   });
+  state.aiRecordsOpen = true;
 }
 
 function drawTrendChart(forecast) {
@@ -1281,12 +1337,16 @@ function handleChartMove(event, tooltip) {
     return;
   }
   const day = point.day;
+  const receiptInflow = day.confirmedInflow + day.pendingInflowIncluded;
+  const paymentOutflow = day.confirmedOutflow + day.pendingOutflowIncluded;
+  const transferNet = day.transferIn - day.transferOut;
   tooltip.innerHTML = `
     <p class="tooltip-title">${formatDateZh(day.date)} ${formatWeek(day.date)}</p>
     <div class="tooltip-grid">
       <span>期末可用</span><strong>${formatAmountWan(day.endingAvailableBalance, { showSign: true })}</strong>
-      <span>收款</span><strong>${formatAmountWan(day.confirmedInflow + day.pendingInflowIncluded + day.transferIn, { showSign: true })}</strong>
-      <span>付款</span><strong>${formatAmountWan(-(day.confirmedOutflow + day.pendingOutflowIncluded + day.transferOut), { showSign: true })}</strong>
+      <span>收款</span><strong>${formatAmountWan(receiptInflow, { showSign: true })}</strong>
+      <span>付款</span><strong>${formatAmountWan(-paymentOutflow, { showSign: true })}</strong>
+      <span>调拨</span><strong>${formatAmountWan(transferNet, { showSign: true })}</strong>
       <span>状态</span><strong>${getRiskLabel(day.riskLevel)}</strong>
     </div>
   `;
