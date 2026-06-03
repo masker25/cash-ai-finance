@@ -344,6 +344,7 @@ let state = {
   drawerOpen: false,
   aiRecordsOpen: false,
   showCriticalOnly: false,
+  toast: null,
   chartMeta: null,
   resizeBound: false,
   ...clone(initialData),
@@ -600,13 +601,12 @@ function render() {
     <div class="app-shell ${state.drawerOpen ? "drawer-visible" : ""}">
       ${renderTopbar()}
       <main class="page">
-        ${renderConclusion(metrics, forecast)}
         ${renderMetrics(metrics, forecast)}
-        ${renderTrendSection()}
-        ${renderWorkspace(forecast, metrics)}
+        ${renderFocusSection(forecast)}
+        ${renderCalendarSection(forecast)}
       </main>
       ${renderDrawer(selectedDay)}
-      ${renderAiRecordDock()}
+      ${renderToast()}
     </div>
   `;
 
@@ -639,7 +639,6 @@ function renderTopbar() {
             )
             .join("")}
         </div>
-        <button type="button" class="ghost-button" data-action="toggle-ai-records">查看 AI 记录${state.records.length > 0 ? ` (${state.records.length})` : ""}</button>
         <button type="button" class="ghost-button" data-action="reset-demo">重置演示</button>
       </div>
     </header>
@@ -686,31 +685,85 @@ function highlightRisk(text) {
   });
 }
 
+function formatAmountShort(value, options = {}) {
+  return formatAmountWan(value, options).replace("万元", "万");
+}
+
+function getTodayActions() {
+  const actionDefs = [
+    {
+      id: "task-transfer-ba",
+      title: "确认 B->A 调拨",
+      note: "解除缺口",
+      actionLabel: "确认调拨",
+      action: "confirm-transfer",
+    },
+    {
+      id: "task-receivable-a",
+      title: "确认客户A回款",
+      note: "避免扩大",
+      actionLabel: "确认事项",
+      action: "confirm-receivable",
+    },
+    {
+      id: "task-duplicate-payment",
+      title: "复核重复付款",
+      note: "减少流出",
+      actionLabel: "去复核",
+      action: "mark-reviewed",
+    },
+  ];
+
+  return actionDefs
+    .map((item) => {
+      const task = state.tasks.find((taskItem) => taskItem.id === item.id);
+      return task && task.status === "pending" ? { ...item, task } : null;
+    })
+    .filter(Boolean);
+}
+
+function getGapInfo(forecast) {
+  const riskDay = forecast.recentRisk;
+  if (!riskDay) {
+    return {
+      amount: 0,
+      date: forecast.minDay.date,
+      isResolved: true,
+    };
+  }
+  return {
+    amount: Math.abs(riskDay.endingAvailableBalance),
+    date: riskDay.date,
+    isResolved: false,
+  };
+}
+
 function renderMetrics(metrics, forecast) {
   const minClass = metrics.minLevel === "risk" ? "risk" : metrics.minLevel === "watch" ? "watch" : "";
+  const gap = getGapInfo(forecast);
+  const actions = getTodayActions();
+  const firstAction = actions[0]?.title.replace("确认 B->A 调拨", "先处理调拨").replace("确认客户A回款", "先确认回款").replace("复核重复付款", "先复核付款") || "暂无急件";
   return `
-    <section class="metrics-grid" aria-label="核心资金指标">
-      <button type="button" class="metric-card" data-action="show-accounts">
+    <section class="metrics-grid home-metrics" aria-label="核心资金指标">
+      <button type="button" class="metric-card current-card" data-action="show-accounts">
         <span class="metric-label">当前可用资金</span>
-        <span class="metric-value num">${formatAmountWan(metrics.availableBalance)}</span>
-        <span class="metric-note">账面余额：${formatAmountWan(metrics.bookBalance)}｜受限资金：${formatAmountWan(metrics.restrictedAmount)}<br />数据截至：2026-06-02 09:30</span>
+        <span class="metric-value num">${formatAmountShort(metrics.availableBalance)}</span>
+        <span class="metric-note">账面 ${formatAmountShort(metrics.bookBalance)}｜受限 ${formatAmountShort(metrics.restrictedAmount)}</span>
       </button>
       <button type="button" class="metric-card" data-action="open-min-day">
-        <span class="metric-label">未来最低可用资金</span>
-        <span class="metric-value num ${minClass}">${formatAmountWan(forecast.minDay.endingAvailableBalance, { showSign: true })}</span>
-        <span class="metric-note">基准预测｜A主体｜${formatDateZh(forecast.minDay.date)}</span>
+        <span class="metric-label">未来最低资金</span>
+        <span class="metric-value num ${minClass}">${formatAmountShort(forecast.minDay.endingAvailableBalance, { showSign: true })}</span>
+        <span class="metric-note">${formatMonthDay(forecast.minDay.date)}｜基准预测</span>
       </button>
-      <button type="button" class="metric-card" data-action="open-risk-day">
-        <span class="metric-label">最近风险 / 最大缺口</span>
-        <span class="metric-value num ${forecast.recentRisk ? "risk" : "watch"}">${
-          forecast.recentRisk ? `A主体 ${formatAmountWan(forecast.recentRisk.endingAvailableBalance, { showSign: true })}` : "暂无负余额"
-        }</span>
-        <span class="metric-note">${forecast.recentRisk ? `${formatDateZh(forecast.recentRisk.date)}｜余额不足` : `${formatDateZh(forecast.minDay.date)}｜低于安全线`}</span>
+      <button type="button" class="metric-card gap-card" data-action="open-risk-day">
+        <span class="metric-label">预计缺口</span>
+        <span class="metric-value num ${gap.isResolved ? "resolved" : "risk"}">${gap.isResolved ? "已解除" : formatAmountShort(gap.amount)}</span>
+        <span class="metric-note">${gap.isResolved ? "继续保持安全垫" : "确认调拨可解除"}</span>
       </button>
-      <button type="button" class="metric-card" data-action="toggle-critical">
-        <span class="metric-label">关键待处理事项</span>
-        <span class="metric-value num ${metrics.criticalTaskCount > 0 ? "watch" : ""}">${metrics.pendingTaskCount}项</span>
-        <span class="metric-note">关键事项：${metrics.criticalTaskCount}项｜影响金额：${formatAmountWan(metrics.criticalImpact)}</span>
+      <button type="button" class="metric-card action-card" data-action="open-first-action">
+        <span class="metric-label">今日动作</span>
+        <span class="metric-value num ${actions.length > 0 ? "watch" : "resolved"}">${actions.length}件</span>
+        <span class="metric-note">${firstAction}</span>
       </button>
     </section>
   `;
@@ -734,6 +787,82 @@ function renderTrendSection() {
         <span class="legend-item"><span class="legend-line"></span>预计期末可用资金</span>
         <span class="legend-item"><span class="legend-line safety"></span>安全线 ${formatAmountWan(SAFETY_LINE)}</span>
         <span class="legend-item"><span class="legend-dot"></span>风险点 / 最低点</span>
+      </div>
+    </section>
+  `;
+}
+
+function renderFocusSection(forecast) {
+  return `
+    <section class="focus-section" aria-label="今日动作和资金趋势">
+      <aside class="today-panel">
+        <div class="section-kicker">今日先做</div>
+        ${renderTodayActions()}
+      </aside>
+      <section class="trend-section slim-trend" aria-labelledby="trendTitle">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title" id="trendTitle">资金趋势</h2>
+            <p class="section-subtitle">只看最低点和风险区间</p>
+          </div>
+          <button type="button" class="ghost-button" data-action="open-min-day">看最低点</button>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="trendChart" aria-label="未来30天现金安全趋势图"></canvas>
+          <div id="chartTooltip" class="chart-tooltip" role="presentation"></div>
+        </div>
+      </section>
+    </section>
+  `;
+}
+
+function renderTodayActions() {
+  const actions = getTodayActions();
+  if (!actions.length) {
+    return `
+      <div class="empty-actions">
+        <strong>暂无急件</strong>
+        <span>继续观察资金安全垫。</span>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="today-actions">
+      ${actions
+        .map(
+          ({ task, title, note, actionLabel, action }) => `
+            <article class="today-action-item">
+              <div>
+                <h3>${title}</h3>
+                <p><span class="num">${formatAmountShort(task.amount)}</span>｜${note}</p>
+              </div>
+              <button type="button" class="primary-button" data-action="${action}" data-task-id="${task.id}">${actionLabel}</button>
+            </article>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderCalendarSection(forecast) {
+  return `
+    <section class="panel calendar-panel calendar-section">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">关键日期</h2>
+          <div class="panel-meta">普通日期弱化，风险日期突出。</div>
+        </div>
+      </div>
+      <div class="weekday-row" aria-hidden="true">
+        ${forecast.days
+          .slice(0, 7)
+          .map((day) => `<div>${formatWeek(day.date)}</div>`)
+          .join("")}
+      </div>
+      <div class="calendar-grid">
+        ${forecast.days.map(renderDayCard).join("")}
       </div>
     </section>
   `;
@@ -862,12 +991,12 @@ function renderDayCard(day) {
         <span class="day-date">${formatMonthDay(day.date)}</span>
         <span>${formatWeek(day.date)}</span>
       </div>
-      <div class="day-balance num ${balanceClass}">${formatAmountWan(day.endingAvailableBalance, { showSign: true })}</div>
+      <div class="day-balance num ${balanceClass}">${formatAmountShort(day.endingAvailableBalance, { showSign: true })}</div>
       ${isDetailed ? `
         <div class="day-flow">
-          <span>收款</span><strong class="num positive">${formatAmountWan(receiptInflow, { showSign: true })}</strong>
-          <span>付款</span><strong class="num negative">${formatAmountWan(-paymentOutflow, { showSign: true })}</strong>
-          <span>调拨</span><strong class="num">${formatAmountWan(transferNet, { showSign: true })}</strong>
+          <span>收款</span><strong class="num positive">${formatAmountShort(receiptInflow, { showSign: true })}</strong>
+          <span>付款</span><strong class="num negative">${formatAmountShort(-paymentOutflow, { showSign: true })}</strong>
+          <span>调拨</span><strong class="num">${formatAmountShort(transferNet, { showSign: true })}</strong>
         </div>
         <div class="day-tags">
           <span class="tag ${getTagClass(day.riskLevel)}">${getRiskLabel(day.riskLevel)}</span>
@@ -876,7 +1005,7 @@ function renderDayCard(day) {
       ` : `
         <div class="day-net-flow">
           <span>净流入/流出</span>
-          <strong class="num ${netFlow > 0 ? "positive" : netFlow < 0 ? "negative" : "zero"}">${formatAmountWan(netFlow, { showSign: true, unit: false })}</strong>
+          <strong class="num ${netFlow > 0 ? "positive" : netFlow < 0 ? "negative" : "zero"}">${formatAmountShort(netFlow, { showSign: true })}</strong>
         </div>
       `}
     </button>
@@ -930,70 +1059,86 @@ function renderAiRecordDock() {
   `;
 }
 
+function renderToast() {
+  return state.toast ? `<div class="toast">${state.toast}</div>` : "";
+}
+
 function renderDrawer(day) {
   const dayEvents = state.events.filter((event) => day.relatedEventIds.includes(event.id));
-  const dayTasks = state.tasks.filter((task) => day.pendingTaskIds.includes(task.id));
-  const resultClass = day.endingAvailableBalance < 0 ? "" : day.endingAvailableBalance < SAFETY_LINE ? "watch" : "brand";
+  const payments = dayEvents.filter((event) => event.direction === "outflow");
+  const receivable = state.events.find((event) => event.id === "evt-receivable-a");
+  const transfer = state.events.find((event) => event.id === "evt-transfer-ba");
+  const transferTask = state.tasks.find((task) => task.id === "task-transfer-ba");
+  const gapAmount = Math.max(0, -day.endingAvailableBalance);
+  const isGapResolved = gapAmount === 0;
+  const aiImpact = transfer?.status === "confirmed"
+    ? `调拨已确认，${formatMonthDay(day.date)}余额已更新为 ${formatAmountShort(day.endingAvailableBalance, { showSign: true })}。`
+    : `确认调拨后，${formatMonthDay(day.date)}余额将从 -32.0万变为 +48.0万。`;
 
   return `
     <div class="drawer-backdrop ${state.drawerOpen ? "open" : ""}" data-action="close-drawer"></div>
-    <aside class="drawer ${state.drawerOpen ? "open" : ""}" aria-label="日期详情抽屉" aria-hidden="${state.drawerOpen ? "false" : "true"}">
+    <aside class="drawer minimal-drawer ${state.drawerOpen ? "open" : ""}" aria-label="缺口详情抽屉" aria-hidden="${state.drawerOpen ? "false" : "true"}">
       <header class="drawer-header">
         <div>
-          <h2 class="drawer-title">${formatDateZh(day.date)}资金明细</h2>
-          <p class="drawer-subtitle">${getEntityName("A")}｜${getRiskLabel(day.riskLevel)}｜${dayTasks.length}项待处理｜安全线 ${formatAmountWan(SAFETY_LINE)}</p>
+          <h2 class="drawer-title">缺口详情</h2>
+          <p class="drawer-subtitle">${formatMonthDay(day.date)}｜${getRiskLabel(day.riskLevel)}</p>
         </div>
         <button type="button" class="ghost-button" data-action="close-drawer" aria-label="关闭详情">关闭</button>
       </header>
       <div class="drawer-body">
-        <section class="drawer-section">
-          <h3 class="drawer-section-title">资金计算摘要</h3>
-          <div class="calc-grid">
-            <span>期初可用资金</span><strong class="num">${formatAmountWan(day.openingAvailableBalance)}</strong>
-            <span>+ 确认收款</span><strong class="num positive">${formatAmountWan(day.confirmedInflow, { showSign: true })}</strong>
-            <span>+ 纳入预测的待确认收款</span><strong class="num positive">${formatAmountWan(day.pendingInflowIncluded, { showSign: true })}</strong>
-            <span>- 确认付款</span><strong class="num negative">${formatAmountWan(-day.confirmedOutflow, { showSign: true })}</strong>
-            <span>- 纳入预测的待确认付款</span><strong class="num negative">${formatAmountWan(-day.pendingOutflowIncluded, { showSign: true })}</strong>
-            <span>+ 调入 / - 调出</span><strong class="num">${formatAmountWan(day.transferIn - day.transferOut, { showSign: true })}</strong>
-            <span class="result ${resultClass}">= 预计期末可用资金</span><strong class="num result ${resultClass}">${formatAmountWan(day.endingAvailableBalance, { showSign: true })}</strong>
+        <section class="gap-summary">
+          <span>缺口</span>
+          <strong class="num ${isGapResolved ? "positive" : "negative"}">${isGapResolved ? "已解除" : formatAmountShort(gapAmount)}</strong>
+        </section>
+
+        <section class="drawer-group">
+          <h3>付款</h3>
+          <div class="simple-list">
+            ${payments
+              .map(
+                (event) => `
+                  <div>
+                    <span>${event.name.replace("供应商B付款", "供应商付款")}</span>
+                    <strong class="num">${formatAmountShort(event.amount)}</strong>
+                  </div>
+                `
+              )
+              .join("")}
           </div>
         </section>
-        <section class="drawer-section">
-          <h3 class="drawer-section-title">资金事项明细表</h3>
-          <div class="detail-table-wrap">
-            <table class="detail-table">
-              <thead>
-                <tr>
-                  <th class="type-cell">事项类型</th>
-                  <th>事项名称</th>
-                  <th>主体</th>
-                  <th>账户</th>
-                  <th class="amount-cell">金额</th>
-                  <th class="date-cell">日期</th>
-                  <th class="status-cell">状态</th>
-                  <th>来源</th>
-                  <th>影响预测</th>
-                  <th>匹配状态</th>
-                  <th>凭证状态</th>
-                  <th class="action-cell">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${dayEvents.length ? dayEvents.map(renderEventRow).join("") : renderEmptyEventRow()}
-              </tbody>
-            </table>
+
+        <section class="drawer-group">
+          <h3>收款</h3>
+          <div class="simple-list">
+            <div>
+              <span>客户回款</span>
+              <strong class="num">${formatAmountShort(receivable?.amount || 0)}，${getStatusLabel(receivable?.status || "pending_confirm")}</strong>
+            </div>
           </div>
         </section>
-        <section class="drawer-section">
-          <h3 class="drawer-section-title">AI 解释</h3>
-          <p class="ai-explain">${buildAiExplanation(day, dayEvents)}</p>
+
+        <section class="drawer-group">
+          <h3>调拨</h3>
+          <div class="simple-list">
+            <div>
+              <span>B->A</span>
+              <strong class="num">${formatAmountShort(transfer?.amount || 0)}，${getStatusLabel(transfer?.status || "pending_confirm")}</strong>
+            </div>
+          </div>
         </section>
-        <section class="drawer-section">
-          <h3 class="drawer-section-title">可执行动作</h3>
+
+        <section class="drawer-group action-group">
+          <h3>建议动作</h3>
           <div class="drawer-actions">
-            ${renderDrawerActions(day, dayTasks)}
+            ${
+              transferTask?.status === "pending"
+                ? `<button type="button" class="primary-button" data-action="confirm-transfer" data-task-id="${transferTask.id}">确认调拨</button>`
+                : `<span class="resolved-pill">调拨已确认</span>`
+            }
           </div>
         </section>
+
+        <p class="ai-explain minimal-ai">${aiImpact}</p>
       </div>
     </aside>
   `;
@@ -1094,6 +1239,10 @@ function bindEvents(forecast) {
       if (action === "open-day") openDay(element.dataset.date);
       if (action === "open-min-day") openDay(forecast.minDay.date);
       if (action === "open-risk-day") openDay((forecast.recentRisk || forecast.minDay).date);
+      if (action === "open-first-action") {
+        const firstAction = getTodayActions()[0];
+        if (firstAction) openTask(firstAction.task.id);
+      }
       if (action === "open-task") openTask(taskId);
       if (action === "confirm-transfer") confirmTransfer(taskId);
       if (action === "confirm-receivable") confirmReceivable(taskId);
@@ -1122,6 +1271,7 @@ function bindEvents(forecast) {
           drawerOpen: false,
           aiRecordsOpen: false,
           showCriticalOnly: false,
+          toast: null,
           chartMeta: null,
           resizeBound: true,
           ...clone(initialData),
@@ -1188,6 +1338,7 @@ function confirmTransfer(taskId) {
   state.selectedDate = task.affectedDate;
   state.selectedTaskId = task.id;
   state.drawerOpen = true;
+  state.toast = "已确认调拨，缺口已解除。";
   render();
 }
 
