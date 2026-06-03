@@ -625,7 +625,7 @@ function renderTopbar() {
         <div class="mark-icon">资</div>
         <div>
           <h1 class="product-title">AI-native 资金管理原型</h1>
-          <p class="product-subtitle">可信资金事实 -> 现金安全判断 -> 关键事项处理 -> AI 记录追溯</p>
+          <p class="product-subtitle">现金安全判断与资金作业闭环</p>
         </div>
       </div>
       <div class="topbar-actions">
@@ -652,7 +652,7 @@ function renderConclusion(metrics, forecast) {
   const unmatchedCount = state.tasks.filter((task) => task.taskType === "match_transaction" && task.status === "pending").length;
   return `
     <section class="conclusion-band" aria-labelledby="cashConclusionTitle">
-      <div>
+      <div class="hero-copy">
         <div class="conclusion-label">
           <span class="status-dot ${dotClass}"></span>
           <span id="cashConclusionTitle">现金安全结论：${metrics.statusLabel}</span>
@@ -664,10 +664,17 @@ function renderConclusion(metrics, forecast) {
           <span>安全线：${formatAmountWan(SAFETY_LINE)}</span>
           <span>预测可信度：${formatPercent(86.4)}</span>
         </div>
-        <div class="trust-strip" aria-label="数据可信状态">
-          数据可信状态：余额同步 <strong>4/4</strong>｜流水待匹配 <strong>${unmatchedCount}项</strong>｜计划纳入 <strong>${planCount}项</strong>｜AI 不直接改数｜数据截至 <strong>09:30</strong>
-        </div>
       </div>
+      <aside class="trust-strip" aria-label="数据可信状态">
+        <p class="trust-title">数据可信状态</p>
+        <div class="trust-grid">
+          <span>余额同步</span><strong>4/4</strong>
+          <span>流水待匹配</span><strong>${unmatchedCount}项</strong>
+          <span>计划纳入</span><strong>${planCount}项</strong>
+          <span>数据截至</span><strong>09:30</strong>
+        </div>
+        <p class="trust-note">AI 不直接改数，只记录和解释。</p>
+      </aside>
     </section>
   `;
 }
@@ -890,11 +897,26 @@ function renderRecord(record) {
 
 function renderAiRecordDock() {
   const count = state.records.length;
+  const latestRecord = state.records[0];
+  const showPreview = latestRecord?.recordType === "operation" && !state.aiRecordsOpen;
   return `
     <div class="ai-dock">
+      ${
+        showPreview
+          ? `<article class="ai-record-preview">
+              <div>
+                <strong>${latestRecord.title}</strong>
+                <p>${latestRecord.content}</p>
+              </div>
+            </article>`
+          : ""
+      }
       <div class="ai-dock-panel ${state.aiRecordsOpen ? "open" : ""}">
         <div class="ai-dock-header">
-          <h3 class="ai-dock-header-title">AI 操作记录</h3>
+          <div>
+            <h3 class="ai-dock-header-title">AI 记录</h3>
+            <p class="ai-dock-subtitle">只记录、解释和追溯，不直接改数。</p>
+          </div>
           <button type="button" class="plain-button" data-action="toggle-ai-records">收起</button>
         </div>
         <div class="ai-dock-body">
@@ -1129,7 +1151,6 @@ function openDay(date) {
   state.selectedDate = date;
   state.selectedTaskId = null;
   state.drawerOpen = true;
-  state.aiRecordsOpen = true;
   render();
 }
 
@@ -1139,7 +1160,6 @@ function openTask(taskId) {
   state.selectedTaskId = taskId;
   state.selectedDate = task.affectedDate;
   state.drawerOpen = true;
-  state.aiRecordsOpen = true;
   render();
 }
 
@@ -1168,7 +1188,6 @@ function confirmTransfer(taskId) {
   state.selectedDate = task.affectedDate;
   state.selectedTaskId = task.id;
   state.drawerOpen = true;
-  state.aiRecordsOpen = true;
   render();
 }
 
@@ -1191,7 +1210,6 @@ function confirmReceivable(taskId) {
   state.selectedDate = task.affectedDate;
   state.selectedTaskId = task.id;
   state.drawerOpen = true;
-  state.aiRecordsOpen = true;
   render();
 }
 
@@ -1207,7 +1225,6 @@ function markReviewed(taskId) {
   state.selectedDate = task.affectedDate;
   state.selectedTaskId = task.id;
   state.drawerOpen = true;
-  state.aiRecordsOpen = true;
   render();
 }
 
@@ -1221,7 +1238,6 @@ function addRecord(recordType, title, content) {
     relatedEventIds: [],
     relatedTaskIds: [],
   });
-  state.aiRecordsOpen = true;
 }
 
 function drawTrendChart(forecast) {
