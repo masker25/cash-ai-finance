@@ -601,6 +601,7 @@ function render() {
     <div class="app-shell ${state.drawerOpen ? "drawer-visible" : ""}">
       ${renderTopbar()}
       <main class="page">
+        ${renderCashHero(forecast)}
         ${renderMetrics(metrics, forecast)}
         ${renderFocusSection(forecast)}
         ${renderCalendarSection(forecast)}
@@ -618,6 +619,24 @@ function render() {
   }
 }
 
+function renderCashHero(forecast) {
+  const gap = getGapInfo(forecast);
+  const status = gap.isResolved ? "风险已解除" : "存在待确认缺口";
+  return `
+    <section class="cash-hero" aria-label="资金首页概览">
+      <div class="cash-hero-copy">
+        <p class="hero-eyebrow">Cash Safety · 30 days</p>
+        <h2>资金首页</h2>
+        <p>先看现金状态，再处理关键动作。</p>
+      </div>
+      <div class="audience-box cash-status-box">
+        <p class="aud-q">${status}</p>
+        <p class="aud-a">${formatMonthDay(forecast.minDay.date)}低点 / 数据截至 09:30 / AI 只记录不改数</p>
+      </div>
+    </section>
+  `;
+}
+
 function renderTopbar() {
   return `
     <header class="topbar">
@@ -629,16 +648,6 @@ function renderTopbar() {
         </div>
       </div>
       <div class="topbar-actions">
-        <div class="segmented" aria-label="预测口径">
-          ${["conservative", "baseline", "optimistic"]
-            .map(
-              (mode) => `
-                <button type="button" class="${state.forecastMode === mode ? "active" : ""}" data-mode="${mode}">
-                  ${mode === "conservative" ? "保守" : mode === "baseline" ? "基准" : "乐观"}
-                </button>`
-            )
-            .join("")}
-        </div>
         <button type="button" class="ghost-button" data-action="reset-demo">重置演示</button>
       </div>
     </header>
@@ -738,32 +747,58 @@ function getGapInfo(forecast) {
   };
 }
 
+function getRecoveryInfo(forecast) {
+  const transfer = state.events.find((event) => event.id === "evt-transfer-ba");
+  const transferTask = state.tasks.find((task) => task.id === "task-transfer-ba");
+  const targetDay = forecast.days.find((day) => day.date === transfer?.eventDate) || forecast.minDay;
+  if (!transfer || !targetDay) {
+    return {
+      value: forecast.minDay.endingAvailableBalance,
+      note: "暂无处理方案",
+      isResolved: !forecast.recentRisk,
+    };
+  }
+
+  if (transfer.status === "confirmed" || transferTask?.status === "done") {
+    return {
+      value: targetDay.endingAvailableBalance,
+      note: "调拨已纳入",
+      isResolved: true,
+    };
+  }
+
+  return {
+    value: targetDay.endingAvailableBalance + transfer.amount,
+    note: "确认调拨后",
+    isResolved: false,
+  };
+}
+
 function renderMetrics(metrics, forecast) {
   const minClass = metrics.minLevel === "risk" ? "risk" : metrics.minLevel === "watch" ? "watch" : "";
   const gap = getGapInfo(forecast);
-  const actions = getTodayActions();
-  const firstAction = actions[0]?.title.replace("确认 B->A 调拨", "先处理调拨").replace("确认客户A回款", "先确认回款").replace("复核重复付款", "先复核付款") || "暂无急件";
+  const recovery = getRecoveryInfo(forecast);
   return `
     <section class="metrics-grid home-metrics" aria-label="核心资金指标">
-      <button type="button" class="metric-card current-card" data-action="show-accounts">
-        <span class="metric-label">当前可用资金</span>
+      <button type="button" class="metric-card current-card" data-action="select-day" data-date="${TODAY}">
+        <span class="metric-label">可用资金</span>
         <span class="metric-value num">${formatAmountShort(metrics.availableBalance)}</span>
-        <span class="metric-note">账面 ${formatAmountShort(metrics.bookBalance)}｜受限 ${formatAmountShort(metrics.restrictedAmount)}</span>
+        <span class="metric-note">账面 ${formatAmountShort(metrics.bookBalance)} / 受限 ${formatAmountShort(metrics.restrictedAmount)}</span>
       </button>
-      <button type="button" class="metric-card" data-action="open-min-day">
-        <span class="metric-label">未来最低资金</span>
+      <button type="button" class="metric-card" data-action="select-min-day">
+        <span class="metric-label">最低资金</span>
         <span class="metric-value num ${minClass}">${formatAmountShort(forecast.minDay.endingAvailableBalance, { showSign: true })}</span>
-        <span class="metric-note">${formatMonthDay(forecast.minDay.date)}｜基准预测</span>
+        <span class="metric-note">${formatMonthDay(forecast.minDay.date)} 触达低点</span>
       </button>
       <button type="button" class="metric-card gap-card" data-action="open-risk-day">
-        <span class="metric-label">预计缺口</span>
+        <span class="metric-label">资金缺口</span>
         <span class="metric-value num ${gap.isResolved ? "resolved" : "risk"}">${gap.isResolved ? "已解除" : formatAmountShort(gap.amount)}</span>
-        <span class="metric-note">${gap.isResolved ? "继续保持安全垫" : "确认调拨可解除"}</span>
+        <span class="metric-note">${gap.isResolved ? "保持观察" : "待确认调拨"}</span>
       </button>
-      <button type="button" class="metric-card action-card" data-action="open-first-action">
-        <span class="metric-label">今日动作</span>
-        <span class="metric-value num ${actions.length > 0 ? "watch" : "resolved"}">${actions.length}件</span>
-        <span class="metric-note">${firstAction}</span>
+      <button type="button" class="metric-card recovery-card" data-action="select-min-day">
+        <span class="metric-label">处理后最低</span>
+        <span class="metric-value num ${recovery.value < 0 ? "risk" : "resolved"}">${formatAmountShort(recovery.value, { showSign: true })}</span>
+        <span class="metric-note">${recovery.note}</span>
       </button>
     </section>
   `;
@@ -796,16 +831,16 @@ function renderFocusSection(forecast) {
   return `
     <section class="focus-section" aria-label="今日动作和资金趋势">
       <aside class="today-panel">
-        <div class="section-kicker">今日先做</div>
+        <div class="section-kicker">下一步</div>
         ${renderTodayActions()}
       </aside>
       <section class="trend-section slim-trend" aria-labelledby="trendTitle">
         <div class="section-header">
           <div>
-            <h2 class="section-title" id="trendTitle">资金趋势</h2>
-            <p class="section-subtitle">只看最低点和风险区间</p>
+            <h2 class="section-title" id="trendTitle">资金走线</h2>
+            <p class="section-subtitle">每天期末余额，沿时间连续变化。</p>
           </div>
-          <button type="button" class="ghost-button" data-action="open-min-day">看最低点</button>
+          <button type="button" class="ghost-button" data-action="select-min-day">定位低点</button>
         </div>
         <div class="chart-wrap">
           <canvas id="trendChart" aria-label="未来30天现金安全趋势图"></canvas>
@@ -846,24 +881,125 @@ function renderTodayActions() {
   `;
 }
 
-function renderCalendarSection(forecast) {
+function findForecastDay(forecast, date) {
+  return forecast.days.find((day) => day.date === date) || forecast.minDay;
+}
+
+function getDayTotals(day) {
+  const receiptInflow = day.confirmedInflow + day.pendingInflowIncluded;
+  const paymentOutflow = day.confirmedOutflow + day.pendingOutflowIncluded;
+  const transferNet = day.transferIn - day.transferOut;
+  const netFlow = receiptInflow - paymentOutflow + transferNet;
+  return { receiptInflow, paymentOutflow, transferNet, netFlow };
+}
+
+function getMondayStart(iso) {
+  const date = parseDate(iso);
+  const offset = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - offset);
+  return toISO(date);
+}
+
+function getWeekDatesFromMonday(iso) {
+  const monday = getMondayStart(iso);
+  return Array.from({ length: 7 }, (_, index) => addDays(monday, index));
+}
+
+function renderDateStrip(forecast, selectedDay) {
+  const days = getWeekDatesFromMonday(selectedDay.date);
   return `
-    <section class="panel calendar-panel calendar-section">
-      <div class="panel-header">
+    <div class="date-strip" aria-label="周视图，周一开始">
+      ${days
+        .map((date) => {
+          const day = forecast.days.find((item) => item.date === date);
+          const isSelected = day?.date === selectedDay.date;
+          const dayNumber = parseDate(date).getDate();
+          return `
+            <button type="button" class="date-pill ${day ? day.riskLevel : "disabled"} ${isSelected ? "active" : ""}" data-action="select-day" data-date="${date}" ${day ? "" : "disabled"}>
+              <span>${formatWeek(date)}</span>
+              <strong>${dayNumber}</strong>
+              <em class="num">${day ? formatAmountShort(day.endingAvailableBalance, { showSign: true }) : "—"}</em>
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderSelectedDayPanel(day) {
+  const totals = getDayTotals(day);
+  const tasks = state.tasks.filter((task) => task.status === "pending" && task.affectedDate === day.date);
+  return `
+    <section class="selected-day-card ${day.riskLevel}" aria-label="当日资金结果">
+      <div class="selected-day-head">
         <div>
-          <h2 class="panel-title">关键日期</h2>
-          <div class="panel-meta">普通日期弱化，风险日期突出。</div>
+          <span class="eyebrow">${formatMonthDay(day.date)} ${formatWeek(day.date)}</span>
+          <h3>当日结果</h3>
+        </div>
+        <span class="tag ${getTagClass(day.riskLevel)}">${getRiskLabel(day.riskLevel)}</span>
+      </div>
+      <div class="selected-result">
+        <span>期末可用</span>
+        <strong class="num ${day.riskLevel === "risk" ? "risk" : day.riskLevel === "watch" ? "watch" : "positive"}">${formatAmountShort(day.endingAvailableBalance, { showSign: true })}</strong>
+      </div>
+      <div class="day-mini-grid">
+        <div>
+          <span>净变化</span>
+          <strong class="num ${totals.netFlow > 0 ? "positive" : totals.netFlow < 0 ? "negative" : "zero"}">${formatAmountShort(totals.netFlow, { showSign: true })}</strong>
+        </div>
+        <div>
+          <span>收款</span>
+          <strong class="num positive">${formatAmountShort(totals.receiptInflow, { showSign: true })}</strong>
+        </div>
+        <div>
+          <span>付款</span>
+          <strong class="num negative">${formatAmountShort(-totals.paymentOutflow, { showSign: true })}</strong>
+        </div>
+        <div>
+          <span>调拨</span>
+          <strong class="num ${totals.transferNet > 0 ? "positive" : totals.transferNet < 0 ? "negative" : "zero"}">${formatAmountShort(totals.transferNet, { showSign: true })}</strong>
         </div>
       </div>
-      <div class="weekday-row" aria-hidden="true">
-        ${forecast.days
-          .slice(0, 7)
-          .map((day) => `<div>${formatWeek(day.date)}</div>`)
-          .join("")}
+      <div class="day-action-list">
+        <div class="day-action-title">当日动作</div>
+        ${
+          tasks.length
+            ? tasks
+                .map((task) => {
+                  const action = getTaskAction(task);
+                  return `
+                    <article class="day-action-row">
+                      <div>
+                        <strong>${getFriendlyTaskTitle(task)}</strong>
+                        <span class="num">${formatAmountShort(task.amount)} / ${getStatusLabel(task.status)}</span>
+                      </div>
+                      <button type="button" class="primary-button" data-action="${action.action}" data-task-id="${task.id}">${action.label}</button>
+                    </article>
+                  `;
+                })
+                .join("")
+            : `<p class="quiet-note">这一天没有必须处理的动作。</p>`
+        }
       </div>
-      <div class="calendar-grid">
-        ${forecast.days.map(renderDayCard).join("")}
+      <button type="button" class="ghost-button day-detail-button" data-action="open-selected-day">查看详情</button>
+    </section>
+  `;
+}
+
+function renderCalendarSection(forecast) {
+  const selectedDay = findForecastDay(forecast, state.selectedDate);
+  return `
+    <section class="panel calendar-panel calendar-section date-section">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">日期</h2>
+          <div class="panel-meta">选择年月日，查看当日结果。</div>
+        </div>
+        <input class="date-input" type="date" min="${forecast.days[0].date}" max="${forecast.days[forecast.days.length - 1].date}" value="${selectedDay.date}" data-date-input aria-label="选择日期" />
       </div>
+      ${renderDateStrip(forecast, selectedDay)}
+      ${renderSelectedDayPanel(selectedDay)}
     </section>
   `;
 }
@@ -1063,82 +1199,124 @@ function renderToast() {
   return state.toast ? `<div class="toast">${state.toast}</div>` : "";
 }
 
+function getFriendlyTaskTitle(task) {
+  const map = {
+    "task-transfer-ba": "确认 B->A 调拨",
+    "task-receivable-a": "确认客户回款",
+    "task-duplicate-payment": "复核重复付款",
+    "task-supplier-voucher": "复核供应商付款",
+    "task-payroll-confirm": "确认工资付款",
+    "task-ops-receivable": "复核运营回款日期",
+    "task-match-unmatched-inflow": "匹配客户到账",
+  };
+  return map[task.id] || task.title;
+}
+
+function renderSimpleEventList(events, emptyText) {
+  if (!events.length) return `<p class="quiet-note">${emptyText}</p>`;
+  return events
+    .map((event) => {
+      const signed = eventSignedAmount(event);
+      const amountClass = signed < 0 ? "negative" : signed > 0 ? "positive" : "";
+      const title = event.name.replace("供应商B付款", "供应商付款").replace("B主体 -> A主体调拨", "B->A");
+      return `
+        <div>
+          <span>${title}</span>
+          <strong class="num ${amountClass}">${formatAmountShort(Math.abs(event.amount))}，${getStatusLabel(event.status)}</strong>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderDrawerActionBlock(tasks, day) {
+  if (!tasks.length) {
+    return `<span class="resolved-pill">${day.riskLevel === "safe" ? "无需处理" : "保持关注"}</span>`;
+  }
+  return tasks
+    .map((task) => {
+      const action = getTaskAction(task);
+      return `
+        <article class="drawer-action-item">
+          <div>
+            <strong>${getFriendlyTaskTitle(task)}</strong>
+            <span class="num">${formatAmountShort(task.amount)} / ${getStatusLabel(task.status)}</span>
+          </div>
+          <button type="button" class="${task.taskType === "confirm_transfer" ? "primary-button" : "ghost-button"}" data-action="${action.action}" data-task-id="${task.id}">${action.label}</button>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function buildMinimalAiImpact(day) {
+  const transfer = state.events.find((event) => event.id === "evt-transfer-ba");
+  const isTransferDay = day.date === transfer?.eventDate;
+  if (isTransferDay && transfer?.status === "confirmed") {
+    return `调拨已确认，${formatMonthDay(day.date)}余额已更新为 ${formatAmountShort(day.endingAvailableBalance, { showSign: true })}。`;
+  }
+  if (isTransferDay) {
+    return `确认调拨后，${formatMonthDay(day.date)}余额将从 -32.0万变为 +48.0万。`;
+  }
+  return `当日余额为 ${formatAmountShort(day.endingAvailableBalance, { showSign: true })}，AI 只记录解释，不直接改数。`;
+}
+
 function renderDrawer(day) {
   const dayEvents = state.events.filter((event) => day.relatedEventIds.includes(event.id));
   const payments = dayEvents.filter((event) => event.direction === "outflow");
-  const receivable = state.events.find((event) => event.id === "evt-receivable-a");
-  const transfer = state.events.find((event) => event.id === "evt-transfer-ba");
-  const transferTask = state.tasks.find((task) => task.id === "task-transfer-ba");
+  const receipts = dayEvents.filter((event) => event.direction === "inflow" && event.eventType !== "transfer_in");
+  const transfers = dayEvents.filter((event) => event.eventType === "transfer_in" || event.eventType === "transfer_out");
+  const dayTasks = state.tasks.filter((task) => task.status === "pending" && task.affectedDate === day.date);
   const gapAmount = Math.max(0, -day.endingAvailableBalance);
-  const isGapResolved = gapAmount === 0;
-  const aiImpact = transfer?.status === "confirmed"
-    ? `调拨已确认，${formatMonthDay(day.date)}余额已更新为 ${formatAmountShort(day.endingAvailableBalance, { showSign: true })}。`
-    : `确认调拨后，${formatMonthDay(day.date)}余额将从 -32.0万变为 +48.0万。`;
+  const isGapDay = gapAmount > 0;
+  const summaryLabel = isGapDay ? "缺口" : "期末可用";
+  const summaryValue = isGapDay ? formatAmountShort(gapAmount) : formatAmountShort(day.endingAvailableBalance, { showSign: true });
 
   return `
     <div class="drawer-backdrop ${state.drawerOpen ? "open" : ""}" data-action="close-drawer"></div>
-    <aside class="drawer minimal-drawer ${state.drawerOpen ? "open" : ""}" aria-label="缺口详情抽屉" aria-hidden="${state.drawerOpen ? "false" : "true"}">
+    <aside class="drawer minimal-drawer ${state.drawerOpen ? "open" : ""}" aria-label="日期详情抽屉" aria-hidden="${state.drawerOpen ? "false" : "true"}">
       <header class="drawer-header">
         <div>
-          <h2 class="drawer-title">缺口详情</h2>
+          <h2 class="drawer-title">${isGapDay ? "缺口详情" : "日期详情"}</h2>
           <p class="drawer-subtitle">${formatMonthDay(day.date)}｜${getRiskLabel(day.riskLevel)}</p>
         </div>
         <button type="button" class="ghost-button" data-action="close-drawer" aria-label="关闭详情">关闭</button>
       </header>
       <div class="drawer-body">
-        <section class="gap-summary">
-          <span>缺口</span>
-          <strong class="num ${isGapResolved ? "positive" : "negative"}">${isGapResolved ? "已解除" : formatAmountShort(gapAmount)}</strong>
+        <section class="gap-summary ${isGapDay ? "risk" : "safe"}">
+          <span>${summaryLabel}</span>
+          <strong class="num ${isGapDay ? "negative" : day.riskLevel === "watch" ? "watch" : "positive"}">${summaryValue}</strong>
         </section>
 
         <section class="drawer-group">
           <h3>付款</h3>
           <div class="simple-list">
-            ${payments
-              .map(
-                (event) => `
-                  <div>
-                    <span>${event.name.replace("供应商B付款", "供应商付款")}</span>
-                    <strong class="num">${formatAmountShort(event.amount)}</strong>
-                  </div>
-                `
-              )
-              .join("")}
+            ${renderSimpleEventList(payments, "无付款")}
           </div>
         </section>
 
         <section class="drawer-group">
           <h3>收款</h3>
           <div class="simple-list">
-            <div>
-              <span>客户回款</span>
-              <strong class="num">${formatAmountShort(receivable?.amount || 0)}，${getStatusLabel(receivable?.status || "pending_confirm")}</strong>
-            </div>
+            ${renderSimpleEventList(receipts, "无收款")}
           </div>
         </section>
 
         <section class="drawer-group">
           <h3>调拨</h3>
           <div class="simple-list">
-            <div>
-              <span>B->A</span>
-              <strong class="num">${formatAmountShort(transfer?.amount || 0)}，${getStatusLabel(transfer?.status || "pending_confirm")}</strong>
-            </div>
+            ${renderSimpleEventList(transfers, "无调拨")}
           </div>
         </section>
 
         <section class="drawer-group action-group">
-          <h3>建议动作</h3>
+          <h3>当日动作</h3>
           <div class="drawer-actions">
-            ${
-              transferTask?.status === "pending"
-                ? `<button type="button" class="primary-button" data-action="confirm-transfer" data-task-id="${transferTask.id}">确认调拨</button>`
-                : `<span class="resolved-pill">调拨已确认</span>`
-            }
+            ${renderDrawerActionBlock(dayTasks, day)}
           </div>
         </section>
 
-        <p class="ai-explain minimal-ai">${aiImpact}</p>
+        <p class="ai-explain minimal-ai">${buildMinimalAiImpact(day)}</p>
       </div>
     </aside>
   `;
@@ -1222,10 +1400,9 @@ function getModeLabel(mode) {
 }
 
 function bindEvents(forecast) {
-  app.querySelectorAll("[data-mode]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.forecastMode = button.dataset.mode;
-      render();
+  app.querySelectorAll("[data-date-input]").forEach((input) => {
+    input.addEventListener("change", () => {
+      selectDay(input.value);
     });
   });
 
@@ -1237,6 +1414,9 @@ function bindEvents(forecast) {
       if (action !== "close-drawer") event.stopPropagation();
 
       if (action === "open-day") openDay(element.dataset.date);
+      if (action === "select-day") selectDay(element.dataset.date);
+      if (action === "select-min-day") selectDay(forecast.minDay.date);
+      if (action === "open-selected-day") openDay(state.selectedDate);
       if (action === "open-min-day") openDay(forecast.minDay.date);
       if (action === "open-risk-day") openDay((forecast.recentRisk || forecast.minDay).date);
       if (action === "open-first-action") {
@@ -1292,9 +1472,19 @@ function bindEvents(forecast) {
     canvas.addEventListener("mouseleave", () => tooltip.classList.remove("visible"));
     canvas.addEventListener("click", (event) => {
       const point = getNearestChartPoint(event);
-      if (point) openDay(point.day.date);
+      if (point) selectDay(point.day.date);
     });
   }
+}
+
+function selectDay(date) {
+  const forecast = computeForecast();
+  const hasDate = forecast.days.some((day) => day.date === date);
+  if (!hasDate) return;
+  state.selectedDate = date;
+  state.selectedTaskId = null;
+  state.drawerOpen = false;
+  render();
 }
 
 function openDay(date) {
@@ -1411,7 +1601,7 @@ function drawTrendChart(forecast) {
 
   const width = rect.width;
   const height = rect.height;
-  const pad = { top: 24, right: 24, bottom: 38, left: 62 };
+  const pad = { top: 28, right: 26, bottom: 44, left: 64 };
   const plotWidth = width - pad.left - pad.right;
   const plotHeight = height - pad.top - pad.bottom;
   const values = forecast.days.map((day) => day.endingAvailableBalance);
@@ -1441,41 +1631,99 @@ function drawTrendChart(forecast) {
     ctx.fillText(formatAmountWan(value, { unit: false }), pad.left - 10, y);
   }
 
+  const zeroY = yScale(0);
+  if (zeroY >= pad.top && zeroY <= pad.top + plotHeight) {
+    ctx.fillStyle = "rgba(220, 38, 38, 0.06)";
+    ctx.fillRect(pad.left, zeroY, plotWidth, pad.top + plotHeight - zeroY);
+    ctx.fillStyle = risk;
+    ctx.font = "11px sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText("缺口区", pad.left + 8, zeroY + 14);
+  }
+
   const safetyY = yScale(SAFETY_LINE);
   ctx.strokeStyle = aux;
-  ctx.setLineDash([6, 5]);
+  ctx.setLineDash([7, 6]);
   ctx.beginPath();
   ctx.moveTo(pad.left, safetyY);
   ctx.lineTo(width - pad.right, safetyY);
   ctx.stroke();
   ctx.setLineDash([]);
+  ctx.fillStyle = aux;
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "right";
+  ctx.fillText("安全线", width - pad.right, safetyY - 12);
 
-  ctx.strokeStyle = brand;
-  ctx.lineWidth = 2.5;
+  const points = forecast.days.map((day, index) => ({
+    day,
+    x: xScale(index),
+    y: yScale(day.endingAvailableBalance),
+  }));
+
+  const areaGradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotHeight);
+  areaGradient.addColorStop(0, "rgba(37, 99, 235, 0.16)");
+  areaGradient.addColorStop(1, "rgba(37, 99, 235, 0)");
   ctx.beginPath();
-  forecast.days.forEach((day, index) => {
-    const x = xScale(index);
-    const y = yScale(day.endingAvailableBalance);
-    if (index === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+  points.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
+  ctx.lineTo(points[points.length - 1].x, pad.top + plotHeight);
+  ctx.lineTo(points[0].x, pad.top + plotHeight);
+  ctx.closePath();
+  ctx.fillStyle = areaGradient;
+  ctx.fill();
+
+  const selectedPoint = points.find((point) => point.day.date === state.selectedDate);
+  if (selectedPoint) {
+    ctx.strokeStyle = "rgba(15, 23, 42, 0.14)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 5]);
+    ctx.beginPath();
+    ctx.moveTo(selectedPoint.x, pad.top);
+    ctx.lineTo(selectedPoint.x, pad.top + plotHeight);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  const lineGradient = ctx.createLinearGradient(pad.left, 0, width - pad.right, 0);
+  lineGradient.addColorStop(0, brand);
+  lineGradient.addColorStop(0.45, aux);
+  lineGradient.addColorStop(1, brand);
+  ctx.strokeStyle = lineGradient;
+  ctx.lineWidth = 3.5;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
   });
   ctx.stroke();
 
-  forecast.days.forEach((day, index) => {
-    const x = xScale(index);
-    const y = yScale(day.endingAvailableBalance);
+  points.forEach((point) => {
+    const day = point.day;
     const isMin = day.date === forecast.minDay.date;
     const isRisk = day.endingAvailableBalance < 0;
     const isToday = day.date === TODAY;
-    if (!isMin && !isRisk && !isToday) return;
+    const isSelected = day.date === state.selectedDate;
+    if (!isMin && !isRisk && !isToday && !isSelected) return;
     ctx.beginPath();
-    ctx.arc(x, y, isMin ? 5 : 4, 0, Math.PI * 2);
-    ctx.fillStyle = isRisk || isMin ? risk : brand;
+    ctx.arc(point.x, point.y, isSelected ? 7 : isMin ? 6 : 4, 0, Math.PI * 2);
+    ctx.fillStyle = isRisk || isMin ? risk : isSelected ? aux : brand;
     ctx.fill();
-    ctx.lineWidth = 2;
+    ctx.lineWidth = isSelected ? 3 : 2;
     ctx.strokeStyle = "#fff";
     ctx.stroke();
   });
+
+  if (selectedPoint) {
+    ctx.fillStyle = text;
+    ctx.font = "12px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(formatMonthDay(selectedPoint.day.date), selectedPoint.x, Math.max(16, selectedPoint.y - 12));
+  }
 
   ctx.fillStyle = text;
   ctx.textAlign = "center";
@@ -1489,11 +1737,7 @@ function drawTrendChart(forecast) {
 
   state.chartMeta = {
     rect,
-    points: forecast.days.map((day, index) => ({
-      day,
-      x: xScale(index),
-      y: yScale(day.endingAvailableBalance),
-    })),
+    points,
   };
 }
 
@@ -1508,12 +1752,12 @@ function handleChartMove(event, tooltip) {
   const paymentOutflow = day.confirmedOutflow + day.pendingOutflowIncluded;
   const transferNet = day.transferIn - day.transferOut;
   tooltip.innerHTML = `
-    <p class="tooltip-title">${formatDateZh(day.date)} ${formatWeek(day.date)}</p>
+    <p class="tooltip-title">${formatMonthDay(day.date)} ${formatWeek(day.date)}</p>
     <div class="tooltip-grid">
-      <span>期末可用</span><strong>${formatAmountWan(day.endingAvailableBalance, { showSign: true })}</strong>
-      <span>收款</span><strong>${formatAmountWan(receiptInflow, { showSign: true })}</strong>
-      <span>付款</span><strong>${formatAmountWan(-paymentOutflow, { showSign: true })}</strong>
-      <span>调拨</span><strong>${formatAmountWan(transferNet, { showSign: true })}</strong>
+      <span>期末可用</span><strong>${formatAmountShort(day.endingAvailableBalance, { showSign: true })}</strong>
+      <span>收款</span><strong>${formatAmountShort(receiptInflow, { showSign: true })}</strong>
+      <span>付款</span><strong>${formatAmountShort(-paymentOutflow, { showSign: true })}</strong>
+      <span>调拨</span><strong>${formatAmountShort(transferNet, { showSign: true })}</strong>
       <span>状态</span><strong>${getRiskLabel(day.riskLevel)}</strong>
     </div>
   `;
@@ -1536,7 +1780,7 @@ function getNearestChartPoint(event) {
       nearest = point;
     }
   });
-  return distance <= 28 ? nearest : null;
+  return distance <= 34 ? nearest : null;
 }
 
 function debounce(fn, wait) {
